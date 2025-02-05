@@ -1,0 +1,48 @@
+library(dplyr)
+
+# Load the original edge dataset
+edges <- read.csv("updated_edges.csv")
+
+# Filter edges of type 0 (white-to-white)
+type_0_edges <- edges %>% filter(type == 0)
+
+# Get unique nodes
+all_nodes <- unique(c(type_0_edges$from, type_0_edges$to))
+
+# Initialize a new data frame for carriage edges
+carriage_edges <- data.frame(from = character(), to = character(), type = integer(), step = character(), stringsAsFactors = FALSE)
+
+# Iterate over each node
+for (node in all_nodes) {
+  # Find neighbors of the node
+  neighbors <- type_0_edges %>% filter(from == node | to == node)
+  neighbors <- unique(c(neighbors$from, neighbors$to))
+  neighbors <- neighbors[neighbors != node] # Exclude the current node
+  
+  # Create pairs of neighbors to form two-step connections
+  for (neighbor in neighbors) {
+    # Find neighbors of the neighbor
+    second_neighbors <- type_0_edges %>% filter((from == neighbor & to != node) | (to == neighbor & from != node))
+    second_neighbors <- unique(c(second_neighbors$from, second_neighbors$to))
+    second_neighbors <- second_neighbors[second_neighbors != neighbor] # Exclude the intermediate node
+    
+    # Add new carriage edges
+    for (second_neighbor in second_neighbors) {
+      carriage_edges <- rbind(carriage_edges, data.frame(
+        from = node,
+        to = second_neighbor,
+        type = 4,       # Carriage edge
+        step = neighbor # Intermediate node
+      ))
+    }
+  }
+}
+
+# Combine the original edges with the new carriage edges
+updated_edges <- bind_rows(edges, carriage_edges)
+
+# Save the updated edge dataset to a new CSV file
+write.csv(updated_edges, "edges_with_carriage.csv", row.names = FALSE)
+
+cat("Carriage edges added successfully and saved to edges_with_carriage.csv\n")
+

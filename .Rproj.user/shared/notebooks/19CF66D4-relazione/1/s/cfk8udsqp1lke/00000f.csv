@@ -1,0 +1,3 @@
+"0","path_matrix_data <- read.csv(""datasets/path_matrix.csv"", header = FALSE, col.names = c(""node"",1:195))"
+"0","path_matrix_data <- path_matrix_data %>% arrange(node)"
+"0","path_matrix <- as.matrix(path_matrix_data)"

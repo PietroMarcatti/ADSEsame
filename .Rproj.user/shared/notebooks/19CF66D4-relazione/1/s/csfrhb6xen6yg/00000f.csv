@@ -1,0 +1,8 @@
+"0","best_hideout = data.frame("
+"0","  node = factor_1_score$node,"
+"0","  score = factor_1_score$score + factor_2_score$score +"
+"0","    0.5*factor_3_score$score + 0.5*factor_4_score$score"
+"0",")"
+"0",""
+"0","best_hideout <- best_hideout[order(-best_hideout$score), ]"
+"0","best_hideout_top10 <- best_hideout[1:10,]"

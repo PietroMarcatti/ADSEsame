@@ -1,0 +1,2 @@
+"0","knitr::opts_chunk$set(echo = TRUE, dev = 'pdf',  out.width = ""\\textwidth"","
+"0","                      out.extra = ""keepaspectratio=false"")"

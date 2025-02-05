@@ -1,0 +1,12 @@
+library(igraph)        # For network analysis
+library(tidyverse)     # For general data manipulation
+# Read CSV files
+nodes <- read_csv("nodes.csv")
+edges <- read_csv("edges.csv")
+# Create a graph
+g <- graph_from_data_frame(d = edges, vertices = nodes, directed = FALSE)
+# Check graph summary
+summary(g)
+
+# Plot the graph
+plot(g)

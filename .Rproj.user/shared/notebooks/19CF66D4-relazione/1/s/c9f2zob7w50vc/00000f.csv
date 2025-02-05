@@ -1,0 +1,4 @@
+"0","par(mar = c(0, 0, 0, 0),pin = c(6, 4.5))"
+"0","svg(filename=""images/black_network.svg"", width = 80, height = 40)"
+"0","plot(g_b, delete.vertices = TRUE, vertex.size = 2.8,"
+"0","     vertex.label.cex =3, layout=black_coords, asp=0.51, frame = FALSE, axes=FALSE)"

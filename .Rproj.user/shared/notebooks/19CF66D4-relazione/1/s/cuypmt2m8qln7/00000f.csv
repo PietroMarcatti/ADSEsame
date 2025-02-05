@@ -1,0 +1,4 @@
+"0","par(mar = c(0, 0, 0, 0),pin = c(6, 4.5))"
+"0","#svg(filename=""images/comm_louvain.svg"", width = 80, height = 40)"
+"0","plot(comm_louvain, g_w, vertex.label = V(g_w), vertex.size = 7.5,"
+"0","     vertex.label.cex =0.62, layout=white_coords, asp=0.51)"

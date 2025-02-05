@@ -1,0 +1,32 @@
+calcolo_similarita <- function(group_matrix, block_size = 1000){
+  num_cores <- detectCores() - 1  
+  cl <- makeCluster(num_cores)
+  registerDoParallel(cl)
+  nr = nrow(group_matrix)
+  nc = ncol(group_matrix)
+  total_iou <- 0
+  total_pairs <- (nr*(nr-1))/2
+  block_tensor <- array(rep(group_matrix, block_size),dim = c(nr, ncol(group_matrix), block_size))
+  index = seq(1,nr,by=block_size)
+  total <- foreach (i = index , .combine = c, .packages = "abind")%dopar%{
+    print(i)
+    i_end = min(block_size, nr-i+1)
+    if (i_end==1){
+      tens <- array(matrix(rep(group_matrix[i,],nr),nrow = nr, byrow=TRUE),
+                    dim = c(nr, nc, 1))
+      merged <- abind(tens,array(block_tensor[,,1],dim=c(nr,nc,1)), along=2)
+    }else{
+      tens <- array(apply(group_matrix[i:(i+i_end-1),], 1, function(row) rep(row, each = nr)), 
+                    dim = c(nr, ncol(group_matrix), i_end))
+      merged <- abind(tens,block_tensor[,,1:i_end], along=2)
+    }
+    
+    intersection = apply(merged, 3, function(slice) apply(slice, 1, function(row) sum(duplicated(row[row!=0]))))
+    union = apply(merged, 3, function(slice) apply(slice, 1, function(row) length(unique(row[row!=0]))))
+    iou = intersection/union
+    
+  }
+  stopCluster(cl)
+  total_iou = sum(total)
+  return ((total_iou-nr)/total_pairs)
+}

@@ -1,0 +1,16 @@
+"0","if (!file.exists(""datasets/n1.csv"")){"
+"0","  exe_path <- ""./cppScripts/pathComputing.exe"""
+"0","  system2(exe_path, wait = TRUE)"
+"0","}"
+"1","Notte 1 completata 
+"
+"1","Notte 2 completata 
+"
+"1","Notte 3 completata 
+"
+"1","Notte 4 completata 
+"
+"0","n1 <- read.csv(""datasets/n1.csv"")"
+"0","n2 <- read.csv(""datasets/n2.csv"")"
+"0","n3 <- read.csv(""datasets/n3.csv"")"
+"0","n4 <- read.csv(""datasets/n4.csv"")"

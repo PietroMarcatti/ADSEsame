@@ -1,0 +1,870 @@
+---
+title: "Relazione per Advanced Data Science"
+author: "Pietro Marcatti 164717"
+date: "2025-01-27"
+subtitle: Analisi di una rete
+output: 
+  pdf_document:
+    keep_tex: true
+    latex_engine: xelatex
+    extra_dependencies: ["geometry"]
+header-includes:
+  - \usepackage{pdflscape}
+  - \usepackage{svg}
+  - \usepackage{graphicx}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = 'pdf',  out.width = "\\textwidth",
+                      out.extra = "keepaspectratio=false")
+```
+
+# Analisi del tabellone di gioco di "Lettere da Whitechapel"
+
+![Il tabellone di gioco.](images/nice_board.jpg)
+![Il tabellone di gioco.](customImages/white_network.pdf)
+## Prefazione
+
+L'obiettivo di questo documento è riportare e presentare il processo di analisi condotto sul grafo contenuto nel tabellone del gioco da tavolo "Lettere da Whitechapel".
+L'analisi vuole utilizzare un approccio analitico per cercare di rispondere quantitativamente a domande di ricerca relativamente alle strategie di gioco che le parti possono utilizzare.
+Data che l'analisi si basa su e utilizza la conoscenza delle regole di gioco, verranno qui brevemente riassunte le regole fondamentali la cui conoscenza è necessaria per apprezzare l'analisi svolta.
+
+### Regole
+
+Il gioco vede due parti: "Jack lo Squartatore" e la "Polizia", scontrarsi in un gioco investigativo a turni suddiviso in 4 macro momementi che corrispondono a quattro notti nella Londra del 1888.
+Una volta sola per partita, all'inizio della prima notte, Jack deve scegliere una nodo bianco come rifugio: ogni notte dovrà farvi ritorno per farla terminare e passare alla fase di gioco successiva.
+Alcune regole di gioco sono state rilassate e quindi ciascuna delle quattro notti vede le seguenti fasi:
+
+\begin{itemize}
+  \item Jack decide in quale dei nodi rossi (luoghi del crimine) vuole commettere il prossimo omicidio, senza rivelarlo.
+  \item La Polizia posiziona le proprie (5) pedine di gioco su altrettanti nodi neri del tabellone.
+  \item Jack rivela in quale nodo ha commesso l'omicidio e dal quale inizierà la sua fuga.
+  \item Jack, segretamente, sceglie in quale nodo bianco adiacente alla sua posizione muoversi.
+  \item La Polizia muove ognuna delle sue pedine in nodi neri a distanza massima 2 da quello corrente e sceglie, per ciascuna, se:
+  \begin{itemize}
+    \item Chiedere indizi: interpella Jack per chiedere se, nella sua fuga, è passato per qualcuno dei nodi bianchi adiacenti a quello           dove si trova la pedina
+    \item Effettuare un arrest: interpella Jack proclamando un singolo nodo bianco adiacente a quello dove si trova la pedina, se Jack           si trova lì è arrestato e la Polizia vince il gioco, altrimenti Jack non deve rivelare nessuna informazione.
+  \end{itemize}
+\end{itemize}
+
+Jack ha a sua disposizione due metodi di movimento speciali ma limitati:
+
+\begin{itemize}
+  \item Carrozza: consente a Jack di compiere due passi nello stesso turno. Inoltre, gli consente di oltrepassare una pedina della Polizia che si frappone tra due dei nodi bianchi coinvolti in questo movimento.
+  \item Vicolo: consente a Jack di trasportare la sua pedina in uno qualsiasi dei nodi bianchi che si trova sul perimetro dello stesso isolato a cui appartiene il nodo in cui si trova.
+\end{itemize}
+
+Il numero di movimenti speciali a disposizione di Jack varia con ogni notte e sono qui riportati:
+
+\begin{itemize}
+  \item Notte 1: 3 carrozze e 2 vicoli
+  \item Notte 2: 2 carrozze e 2 vicoli
+  \item Notte 3: 2 carrozze e 1 vicolo
+  \item Notte 4: 1 carrozza e 1 vicolo
+\end{itemize}
+
+## Analisi Esplorativa
+
+Prima di cercare di rispondere a domande relative al dominio di gioco è importante studiare le caratteristiche del dataset.
+Questo per comprendere con che tipo di dati si lavora, come sono distribuiti e come si relazionano.
+L'unica fonte dei dati è il tabellone di gioco dal quale sono stati manualmente estratti i seguenti dataset:
+
+\begin{itemize}
+\item nodes.csv, con colonne:
+  \begin{itemize}
+  \item name, identificativo univoco intero: da 1 a 195 inclusi per i nodi bianchi, da 201 a 434 per i nodi neri
+  \item type, codifica ridondante della tipologia di nodo: 0 per nodi bianchi, 1 per nodi neri
+  \item crime\_scene: 1 per i nodi bianchi che sono scena del crimine, 0 altrimenti
+  \item hideout: 1 per i nodi bianchi che sono candidati rifugio per Jack, 0 altrimenti
+  \item yellow: 1 per i nodi neri che nel gioco senza rilassamento delle regole corrispondono al punto di partenza delle pedine Polizia, 0 altrimenti
+  \end{itemize}
+\item base\_edges.csv, con colonne:
+  \begin{itemize}
+  \item from, identificativo del primo estremo dell'arco
+  \item to, identificativo del secondo estremo dell'arco
+  \item type, codifica della tipologia di arco:
+    \begin{itemize}
+    \item 0: arco bianco-bianco semplice
+    \item 1: arco nero-nero semplice
+    \item 2: arco nero-bianco
+    \item 3: arco bianco-bianco per i vicoli
+    \end{itemize}
+  \item step, per gli archi in questo dataset è sempre 0, diverrà rilevante con l'aggiunta di altri archi in seguito
+  \item id, identificativo univoco intero crescente per gli archi
+  \end{itemize}
+\end{itemize}
+
+%per gli archi con type = 4, questo è il nodo a metà del movimento di lunghezza 2
+
+```{r import, warning=FALSE, message=FALSE}
+library(igraph)
+library(tidyverse)
+library(tidygraph)
+library(ggraph)
+library(gridExtra)
+library(tcltk)
+library(abind)
+library(foreach)
+library(doParallel)
+# Lettura dei file CSV
+nodes <- read_csv("datasets/nodes.csv", show_col_types = FALSE)
+head(nodes)
+base_edges <- read_csv("datasets/base_edges.csv",show_col_types = FALSE)
+head(base_edges)
+# Creazione del grafo
+g <- graph_from_data_frame(vertices= nodes, d = base_edges, directed = FALSE)
+```
+```{r, echo=FALSE, results='hide'}
+system('"C:\\Program Files\\Inkscape\\bin\\inkscape.com" "customImages\\white_network.svg" --export-type=pdf --export-filename="customImages\\white_network.pdf"')
+system('"C:\\Program Files\\Inkscape\\bin\\inkscape.com" "customImages\\black_network.svg" --export-type=pdf --export-filename="customImages\\black_network.pdf"')
+system('"C:\\Program Files\\Inkscape\\bin\\inkscape.com" "customImages\\black_centralities.svg" --export-type=pdf --export-filename="customImages\\black_centralities.pdf"')
+system('"C:\\Program Files\\Inkscape\\bin\\inkscape.com" "customImages\\white_centralities.svg" --export-type=pdf --export-filename="customImages\\white_centralities.pdf"')
+
+system('"C:\\Program Files\\Inkscape\\bin\\inkscape.com" "customImages\\comm_edge_bet.svg" --export-type=pdf --export-filename="customImages\\comm_edge_bet.pdf"')
+system('"C:\\Program Files\\Inkscape\\bin\\inkscape.com" "customImages\\comm_label_pro.svg" --export-type=pdf --export-filename="customImages\\comm_label_pro.pdf"')
+system('"C:\\Program Files\\Inkscape\\bin\\inkscape.com" "customImages\\comm_louvain.svg" --export-type=pdf --export-filename="customImages\\comm_louvain.pdf"')
+system('"C:\\Program Files\\Inkscape\\bin\\inkscape.com" "customImages\\police_network.svg" --export-type=pdf --export-filename="customImages\\police_network.pdf"')
+```
+### Topologia del grafo
+
+Il grafo del tabellone di gioco può essere suddiviso semanticamente in 3 sottografi sulla base di quale tipo di archi si considera:
+
+\begin{itemize}
+  \item Archi di tipo 0: mostra il grafo nel quale si muove Jack con soli movimenti semplici.
+  \item Archi di tipo 1: è il grafo nel quale si muove la Polizia.
+  \item Archi di tipo 2: è il grafo dell'interazione tra i nodi bianchi e quelli neri per la ricerca di indizi e l'emanazione di arresti.
+\end{itemize}
+
+```{r, warning=FALSE, message=FALSE,include=FALSE, echo=FALSE}
+white_edges <- which(E(g)$type %in% c(0))
+g_w <- subgraph_from_edges(g, white_edges, delete.vertices = TRUE)
+
+# Define color and label properties
+V(g_w)$color <- "white"  # Node fill color
+V(g_w)$label.color <- "black"  # Node text color
+V(g_w)$label.cex <- 0.8 
+V(g_w)$size <- 10  # Optional: Adjust node size
+E(g_w)$color <- "forestGreen"
+V(g_w)$label <- V(g_w)$name
+white_coords <- read_csv("datasets/coordinates/white_coordinates.csv")
+white_coords$V2 <- 980 - white_coords$V2
+white_coords <- as.matrix(white_coords)
+```
+
+```{r out.width='21cm', fig.align='none', fig.margin=FALSE, include=FALSE, echo=FALSE}
+par(mar = c(0, 0, 0, 0),pin = c(6, 4.5))
+svg(filename="images/white_network.svg", width = 80, height = 40)
+plot(g_w, delete.vertices = TRUE, vertex.label = V(g_w), vertex.size = 2.8,
+     vertex.label.cex =3, layout=white_coords, asp=0.51, frame = FALSE, axes=FALSE)
+dev.off()
+```
+
+\begin{landscape}
+\begin{figure}
+    \centering
+    \hspace*{-1.7in}
+    \includegraphics[width=26cm]{customImages/white_network.pdf}
+    \caption{Il grafo dei nodi bianchi con archi di tipo 0}
+    \label{fig:enter-label}
+\end{figure}
+\end{landscape}
+
+```{r, warning=FALSE, message=FALSE,include=FALSE, echo=FALSE}
+black_edges <- which(E(g)$type %in% c(1))
+g_b <- subgraph_from_edges(g, black_edges, delete.vertices = TRUE)
+
+# Define color and label properties
+V(g_b)$color <- "black"  # Node fill color
+V(g_b)$label.color <- "white"  # Node text color
+V(g_b)$label.cex <- 0.8 
+V(g_b)$size <- 10  # Optional: Adjust node size
+E(g_b)$color <- "blue"
+V(g_b)$label <- V(g_b)$name
+black_coords <- read_csv("datasets/coordinates/black_coordinates.csv")
+black_coords$V2 <- 980 - black_coords$V2
+black_coords <- as.matrix(black_coords)
+```
+
+```{r out.width='21cm', fig.align='none', fig.margin=FALSE, include=FALSE, echo=FALSE}
+par(mar = c(0, 0, 0, 0),pin = c(6, 4.5))
+svg(filename="images/black_network.svg", width = 80, height = 40)
+plot(g_b, delete.vertices = TRUE, vertex.size = 2.8,
+     vertex.label.cex =3, layout=black_coords, asp=0.51, frame = FALSE, axes=FALSE)
+dev.off()
+```
+
+\begin{landscape}
+\begin{figure}
+    \centering
+    \hspace*{-1.7in}
+    \includegraphics[width=26cm]{customImages/white_network.pdf}
+    \caption{Il grafo dei nodi bianchi con archi di tipo 0}
+    \label{fig:enter-label}
+\end{figure}
+\end{landscape}
+
+```{r, warning=FALSE, message=FALSE,include=FALSE, echo=FALSE}
+police_edges <- which(E(g)$type %in% c(2))
+g_p <- subgraph_from_edges(g, police_edges, delete.vertices = FALSE)
+
+# Define color and label properties
+
+V(g_p)$color <- ifelse(V(g_p)$type == 0, "white", "black")  # Node fill color
+V(g_p)$label.color <- ifelse(V(g_p)$type == 0, "black", "white")  # Node text color
+V(g_p)$label.cex <- 0.8 
+V(g_p)$size <- 10  # Optional: Adjust node size
+E(g_p)$color <- "orange"
+V(g_p)$label <- V(g_p)$name
+all_coords <- read_csv("datasets/coordinates/all_coordinates.csv")
+all_coords$V2 <- 980 - all_coords$V2
+all_coords <- as.matrix(all_coords)
+```
+
+```{r out.width='21cm', fig.align='none', fig.margin=FALSE, include=FALSE, echo=FALSE}
+par(mar = c(0, 0, 0, 0),pin = c(6, 4.5))
+svg(filename="images/police_network.svg", width = 80, height = 40)
+plot(g_p, delete.vertices = FALSE, vertex.size = 2.8,
+     vertex.label.cex =3, layout=all_coords, asp=0.51, frame = FALSE, axes=FALSE)
+dev.off()
+```
+
+### Centralità di base
+
+Separiamo i nodi bianchi da quelli neri in quanto la loro natura è abbastanza diversa.
+Infatti, è possibile vedere che il grado medio e in generale la distribuzione dei gradi nelle reti individuate dai due colori è molto differente.
+
+```{r degree distribution, warning=FALSE, message=FALSE}
+nodi_b = V(g)[type == 1]
+nodi_w = V(g)[type == 0]
+b_degrees <- degree(g, v = nodi_b)
+w_degrees <- degree(g, v = nodi_w)
+b_degree_counts <-table(b_degrees)
+w_degree_counts <-table(w_degrees)
+```
+
+```{r degree output, echo=FALSE, fig.height=10, fig.width=7}
+# Alcuni dati sul grafo:
+stats <- list(
+  "Numero di nodi bianchi e neri" =table(V(g)$type),
+  "Numero di archi per tipo"= table(E(g)$type),
+  "Distribuzione dei gradi: nodi bianchi" = w_degree_counts,
+  "Distribuzione dei gradi: nodi neri" = b_degree_counts
+)
+print(stats)
+par(mfrow=c(3,1))
+barplot(table(E(g)$type), main="Archi per tipo", xlab="Tipo")
+barplot(w_degree_counts, main="Distribuzione grado nodi bianchi", xlab = "Grado")
+barplot(b_degree_counts, main="Distribuzione grado nodi neri", xlab = "Grado")
+```
+
+La distribuzione del grado per i nodi bianchi si avvicina maggiormente ad una gaussiana.
+Ha una coda destra leggermente pesante ma tutto sommato la distribuzione è normale.
+La distribuzione dei nodi neri invece è più sghemba.
+Proseguendo l'analisi con il calcolo delle centralità più comuni misuriamo la closeness e la betweenness per i grafi indotti dagli archi di tipo 0 e 1 rispettivamente.
+Questi grafi rappresentano la rete di movimenti di base per entrambe le parti.
+
+```{r compute closeness/betweenness}
+# Creo il grafo dei nodi bianchi, escludendo gli archi di tipo vicolo
+g_w <- subgraph_from_edges(g, which(E(g)$type == 0), delete.vertices = TRUE)
+closeness_w <- closeness(g_w)
+betweenness_w <- betweenness(g_w)
+clo_w <- data.frame(
+  Node = names(closeness_w),
+  Closeness = closeness_w
+)
+bet_w <- data.frame(
+  Node = names(betweenness_w),
+  Betweenness = betweenness_w
+)
+# Do attenzione particolare ai nodi più centrali per
+clo_w <- clo_w[order(-clo_w$Closeness), ]
+clo_w_top10 <- clo_w[1:10, ]
+bet_w <- bet_w[order(-bet_w$Betweenness), ]
+bet_w_top10 <- bet_w[1:10, ]
+```
+
+```{r plot closeness, echo=FALSE}
+par(mfrow=c(1,1))
+plot1<-ggplot(clo_w, aes(x = reorder(Node, -Closeness), y = Closeness)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Closeness Centrality Nodi Bianchi",x = NULL, y = "Closeness")+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+plot2<-ggplot(clo_w_top10, aes(x = reorder(Node, -Closeness), y = Closeness)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Top 10 Nodi per Closeness Centrality", x = "Node", y = "Closeness Centrality") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+grid.arrange(plot1, plot2, ncol = 1)
+```
+
+Com'è possibile notare, non sorprende che i nodi topologicamente più centrali secondo la disposizione dei nodi indotta dal tabellone, rappresentino anche i nodi con closeness più alta.
+
+```{r plot betweenness, echo=FALSE}
+# Plot top 10 nodes
+par(mfrow=c(1,1))
+plot1<-ggplot(bet_w, aes(x = reorder(Node, -Betweenness), y = Betweenness)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Betweenness Centrality Nodi Bianchi", x = NULL, y = "Betweenness")+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+plot2<-ggplot(bet_w_top10, aes(x = reorder(Node, -Betweenness), y = Betweenness)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Top 10 Nodi per Betweenness Centrality", x = "Node", y = "Betweenness Centrality") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+grid.arrange(plot1, plot2, ncol = 1)
+```
+
+Per quanto riguarda la betweenness, di nuovo, non sorprende come i nodi collocati sulle arterie principali del quartiere che definisce il grafo sono quelli che presentano un valore massimo per la betweenness.
+Questi due risultati non soprendono particolarmente poichè il grafo del tabellone è artificiale.
+Esso è pensato per bilanciare le forze in gioco e consentire ai giocatori di trovare conferma in quella che è la loro comprensione della navigabilità di una rete per come rappresentata in mappa.
+\begin{landscape}
+\begin{figure}
+    \centering
+    \hspace*{-1.7in}
+    \includesvg[width = 32cm]{customImages/white_network.svg}
+    \caption{Il grafo dei nodi bianchi con archi di tipo 0}
+    \label{fig:enter-label}
+\end{figure}
+\end{landscape}
+
+\newpage In maniera simile è possibile calcolare le centralità nella rete definita dai nodi neri con i soli archi semplici di tipo 1
+
+```{r echo=FALSE}
+g_b <- subgraph_from_edges(g, which(E(g)$type == 1))
+closeness_b <- closeness(g_b)
+betweenness_b <- betweenness(g_b)
+clo_b <- data.frame(
+  Node = names(closeness_b),
+  Closeness = closeness_b
+)
+bet_b <- data.frame(
+  Node = names(betweenness_b),
+  Betweenness = betweenness_b
+)
+clo_b <- clo_b[order(-clo_b$Closeness), ]
+clo_b_top10 <- clo_b[1:10, ]
+bet_b <- bet_b[order(-bet_b$Betweenness), ]
+bet_b_top10 <- bet_b[1:10, ]
+```
+
+```{r echo=FALSE, fig.height=4}
+plot1<-ggplot(clo_b, aes(x = reorder(Node, -Closeness), y = Closeness)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Closeness Centrality Nodi Neri",x = NULL, y = "Closeness")+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+plot2<-ggplot(clo_b_top10, aes(x = reorder(Node, -Closeness), y = Closeness)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Top 10 Nodi per Closeness Centrality", x = "Node", y = "Closeness Centrality") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+grid.arrange(plot1, plot2, ncol = 1)
+```
+
+```{r echo=FALSE, fig.height=4}
+# Plot top 10 nodes
+plot1 <-ggplot(bet_b, aes(x = reorder(Node, -Betweenness), y = Betweenness)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Betweenness Centrality Nodi Neri", x = NULL, y = "Betweenness")+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+plot2<-ggplot(bet_b_top10, aes(x = reorder(Node, -Betweenness), y = Betweenness)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Top 10 Nodi per Betweenness Centrality", x = "Node", y = "Betweenness Centrality") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+grid.arrange(plot1, plot2, ncol = 1)
+```
+
+### Ricerca delle comunità
+
+```{r, warning=FALSE, message = FALSE}
+# Trovo le comunità secondo diversi algoritmi
+comm_louvain <- cluster_louvain(g_w)
+comm_edge_bet <- cluster_edge_betweenness(g_w)
+```
+
+```{r, fig.width=10, fig.height=7, out.width="100%"}
+par(mar = c(0, 0, 0, 0),pin = c(6, 4.5))
+#svg(filename="images/comm_louvain.svg", width = 80, height = 40)
+plot(comm_louvain, g_w, vertex.label = V(g_w), vertex.size = 7.5,
+     vertex.label.cex =0.62, layout=white_coords, asp=0.51)
+#svg(filename="images/comm_edge_bet.svg", width = 80, height = 40)
+plot(comm_edge_bet, g_w, vertex.label = V(g_w), vertex.size = 7.5,
+     vertex.label.cex =0.62, layout=white_coords, asp=0.51)
+
+```
+
+```{r, fig.width=10, fig.height=7, out.width="100%"}
+plot(comm_louvain, g_w, vertex.label = V(g_w), vertex.size = 5,
+     vertex.label.cex =0.7, layout=white_coords, asp=0.51)
+```
+
+Le comunità trovate dagli algoritmi, in tutti e 3 i casi, rispecchiano molto le comunità che ci saltano all'occhio guardando il tabellone di gioco.
+
+## Analisi: qual è il miglior nascondiglio per Jack?
+
+La domanda di ricerca più saliente che suscita il dataset è: quale dei nodi bianchi è il nascondiglio migliore per Jack?
+Per provare a rispondere a questa domanda è possibile definire delle caratteristiche desiderate e misurarle su ogni nodo a disposizione.
+I risultati possono poi essere sommati in una combinazione lineare che consente di dare maggior peso ad alcune di esse.
+
+Nota la dinamica dei turni di gioco risulta immediato che i percorsi minimi siano di fondamentale importanza.
+Questo perchè Jack muove un'unica pedina mentre la polizia 5: più tempo (passi) Jack ci mette per giungere al suo nascondiglio più sono i nodi che la Polizia può raggiungere e controllare per restringere il campo di ricerca.
+
+Un secondo commento che segue spontaneo riguarda quali di questi percorsi siano rilevanti.
+Nel rilassamento imposto alle regole, i soli nodi in cui è possibile commettere un omicidio sono quelli colorati di rosso, perciò la fuga di Jack comincerà sempre da uno di essi.
+Mentre la destinazione può essere un qualsiasi nodo candidato nascondiglio.
+
+A questo scopo, integrando la conoscenza del dominio di gioco vengono proposti i seguenti fattori per quantificare la desiderabilità di un nascondiglio.
+
+\begin{itemize}
+  \item Fattore 1 - contributo delle centralità: 
+  \begin{itemize}
+    \item Per ogni nodo vengono calcolate le centralità
+    \begin{itemize}
+      \item Degree
+      \item Closeness (media per ogni notte di gioco)
+      \item Katz
+    \end{itemize}
+    \item Per ciascuna viene calcolato
+    \begin{itemize}
+      \item Valore normalizzato (min-max)
+      \item Rango percentile
+    \end{itemize}
+    \item Il punteggio del nodo è la media di questi due (max 100)
+  \end{itemize}
+  \item Fattore 2 - contributo della varietà dei percorsi: 
+  \begin{itemize}
+    \item Per ogni coppia di percorsi minimi da ogni scena del crimine a ogni nascondiglio viene calcolato
+    \begin{itemize}
+      \item $1 - \lvert \text{Similarità di Jaccard tra il vettore dei nodi}\rvert$
+      \item $1 - \lvert \text{Similarità di Jaccard tra il vettore degl'archi}\rvert$
+    \end{itemize}
+    \item Questi valori vengono sommati per favorire i nodi con molti percorsi minimi, anche se simili, e normalizzati
+    \item Il punteggio del nodo è la media del valore ottenuto per nodi e archi (max 100)
+  \end{itemize}
+  \item Fattore 3 - contributo della pattugliabilità: 
+  \begin{itemize}
+    \item Viene definita una metrica ricorsiva per quantificare l'importanza di nodi bianchi e neri nella rete di interazione
+    \begin{itemize}
+      \item Un nodo bianco è importante se è vicino a nodi bianchi importanti ed è pattugliabile da nodi neri importanti
+      \item Un nodo nero è importante se è vicino a nodi neri importanti e può pattugliare nodi bianchi importanti
+    \end{itemize}
+    \item Per ogni nodo viene sommata l'importanza dei nodi neri che lo pattugliano
+    \item Il vettore viene normalizzato in ordine decrescente (max 100)
+  \end{itemize}
+  \item Fattore 4 - contributo rischio dei percorsi: 
+  \begin{itemize}
+    \item Vengono sommati i punteggi di importanza dei nodi neri che pattugliano i nodi bianchi dei percorsi minimi verso ogni nodo,
+    \item I valori ottenuti sono normalizzati per il numero di percorsi minimi verso quel nodo
+    \item Il punteggio del nodo è la  (max 100)
+  \end{itemize}
+\end{itemize}
+
+### Calcolo degli archi derivati
+
+```{r}
+compute_double_edges <- function(edges, edge_type) {
+  max_id <- max(edges$id, na.rm = TRUE)
+  
+  directed_base_edges <- edges %>% bind_rows(edges %>%
+              mutate(from = edges$to, to = edges$from))
+  
+  two_step_edges <- directed_base_edges %>%
+    inner_join(directed_base_edges, by = c("to" = "from"), suffix =  c("_1","_2")) %>%
+    filter(from != to_2) %>%  # Avoid cycles like 2->3->2
+    transmute(
+      from = from,
+      step = to,
+      to = to_2,
+      type = edge_type  # The pivot node
+    ) %>%
+    arrange(from, to, step) %>%  
+    distinct(.keep_all = TRUE) %>%  # Remove duplicate paths
+    mutate(id = row_number() + max_id)
+
+  return(two_step_edges)
+}
+```
+
+```{r, warning=FALSE}
+if (!file.exists("datasets/all_edges.csv")){
+  carriage_edges = compute_double_edges(base_edges%>%filter(type==0),4)
+  black_double_edges = compute_double_edges(base_edges%>%filter(type==1),5)
+  edges <- bind_rows(base_edges, carriage_edges, black_double_edges)
+  write.csv(edges, "datasets/all_edges.csv", sep=",", row.names = FALSE)
+}else{
+  edges <- read.csv("datasets/all_edges.csv")
+}
+```
+
+### Calcolo dei percorsi minimi
+
+I percorsi minimi tra tutte le scene del crimine e i nascondigli candidati vengono trovati utilizzando una variazione di BFS. Questo è necessario poichè le regole di gioco escludono alcuni percorsi i quali devono:
+\begin{itemize}
+  \item Terminare con un arco semplice di tipo 0
+  \item Contenere al massimo un numero di archi carrozza e vicolo compatibile con la notte di gioco
+\end{itemize}
+Anche il computo dei percorsi minimi è particolarmente dispendioso in termini di tempo perciò se nella cartella di lavoro sono presenti i file che li contengono, divisi per notte ti gioco, vengono utilizzati quest'ultimi.
+
+```{r}
+if (!file.exists("datasets/n1.csv")){
+  
+}else{
+  n1 <- read.csv("datasets/n1.csv")
+}
+if (!file.exists("datasets/n2.csv")){
+  
+}else{
+  n2 <- read.csv("datasets/n2.csv")
+}
+if (!file.exists("datasets/n3.csv")){
+  
+}else{
+  n3 <- read.csv("datasets/n3.csv")
+}
+if (!file.exists("datasets/n4.csv")){
+  
+}else{
+  n4 <- read.csv("datasets/n4.csv")
+}
+```
+
+
+```{r}
+murder_sites <- c(3,21,27,65,84,147,149,158)
+all_paths <- bind_rows(n1, n2, n3, n4)
+if (!file.exists("datasets/all_paths.csv")){
+  write.csv(all_paths, "datasets/all_paths.csv", sep=",", row.names = FALSE)
+}
+# Creazione del grafo
+complete_g <- graph_from_data_frame(vertices = nodes,d = edges, directed = FALSE)
+```
+
+### Fattore 1: contributo delle centralità
+
+Vengono definite le tre funzioni utilizzate per la costruzione del punteggio e il calcolo della closeness nel caso in cui i cammini minimi siano noti.
+Quest'ultima è necessaria poichè la distanza tra un nodo candidato e un altro non è rilevante, contano solo quelle tra nodi candidati e scene del crimine.
+
+```{r}
+norm_min_max <- function(x) {
+  (x -min(x))/ (max(x)-min(x))
+}
+
+rank_percentiles <- function(x) {
+  ecdf(x)(x) * 100
+}
+
+clos_with_paths <-function(paths){
+  paths %>% group_by(to, from,cost)%>%summarize(count = n(),.groups = "drop")%>%
+   group_by(to)%>%summarize(clos = 1/sum(cost), .groups = "drop")
+}
+```
+
+Viene costruito il grafo dei nodi bianchi, questa volta al completo, includendo anche gli archi di tipo 3 e 4.
+
+```{r}
+g_w <- subgraph_from_edges(complete_g, which(E(complete_g)$type %in% c(0,3,4)), delete.vertices = TRUE)
+hideouts <- V(g_w)[!V(g_w) %in% murder_sites]
+```
+
+E quindi vengono calcolate le centralità
+
+```{r}
+degree_centrality <- degree(g_w)
+degree_centrality = degree_centrality[!names(degree_centrality) %in% murder_sites]
+degree_norm <- norm_min_max(degree_centrality)*100
+degree_rank <- rank_percentiles(rank(degree_centrality, ties.method = "average"))
+
+c_centrality <- data.frame(
+  node = V(g_w),
+  clo_n1 = clos_with_paths(n1)$clos,
+  clo_n2 = clos_with_paths(n2)$clos,
+  clo_n3 = clos_with_paths(n3)$clos,
+  clo_n4 = clos_with_paths(n4)$clos
+)
+c_centrality$closeness <- rowMeans(c_centrality[,2:5])
+c_centrality = c_centrality %>% filter(!node %in% murder_sites)
+close_norm <- norm_min_max(c_centrality$closeness)*100
+close_rank <- rank_percentiles(rank(c_centrality$closeness, ties.method = "average"))
+
+eigen_centrality <- eigen_centrality(g_w)$vector
+eigen_centrality = eigen_centrality[!names(eigen_centrality) %in% murder_sites]
+eigen_norm <- norm_min_max(eigen_centrality)*100
+eigen_rank <- rank_percentiles(rank(eigen_centrality, ties.method = "average"))
+
+factor_1_raw <- data.frame(
+  node = hideouts,
+  degree_norm,
+  degree_rank,
+  close_norm,
+  close_rank,
+  eigen_norm,
+  eigen_rank
+)
+
+factor_1_score <- data.frame(
+  node = hideouts,
+  score = rowMeans(factor_1_raw[,2:7])
+)
+```
+
+Visualizziamo i punteggi relativi al primo fattore per i nodi bianchi.
+
+```{r echo=FALSE, fig.height=4}
+factor_1_sorted <- factor_1_score[order(-factor_1_score$score), ]
+factor_1_top10 <- factor_1_sorted[1:10, ]
+
+par(mfrow=c(1,1))
+plot1<-ggplot(factor_1_sorted, aes(x = reorder(node, -score), y = score)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Punteggio Fattore 1",x = NULL, y = "Fattore 1")+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+plot2<-ggplot(factor_1_top10, aes(x = reorder(node, -score), y = score)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Punteggio Fattore 1 Top 10", x = "Nodo", y = "Fattore 1") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+grid.arrange(plot1, plot2, ncol = 1)
+```
+
+Non sorprende che i nodi che avevamo evidenziato come centrali nella fase esplorativa del dataset siano gli stessi che risultano particolarmente centrali quando aggiungiamo tutti gli archi legali del grafo.
+% Inserire immagine della topologia del grafo per il confronto
+
+### Fattore 2:
+
+Viene definita la funzione che calcola la similarità di Jaccard tra i vettori dei nodi e degl'archi di percorsi minimi a partire dalla stessa scena del crimine verso lo stesso nodo candidato.
+
+Dato che la computazione della similarità è una molto dispendiosa in termini di tempo (molteplici ore), se è già presente nella cartella di lavoro il dataset relativo, la computazione viene saltata.
+
+```{r fattore2Calcolo}
+if (!file.exists("datasets/path_similarity.csv")){
+  source("calcoloSimilarita.R")
+  grouped_paths <- all_paths %>% group_by(to)
+  group_results <- grouped_paths %>% group_map(~ {
+      # Trasformo il gruppo in matrice
+      group_matrix <- as.matrix(.x)
+      # Calcolo la similarità per nodi e archi
+      node_similarity <- calcolo_similarita(group_matrix[,4:14])
+      edge_similarity <- calcolo_similarita(group_matrix[,15:24])
+      # Return the result
+      tibble(to = first(.x$to), node_similarity = list(node_similarity), edge_similarity = list(edge_similarity))
+    }, .keep=TRUE)  
+  path_similarity <- bind_rows(group_results)
+  write.csv(path_similarity, "datasets/path_similarity_test.csv", sep=",", row.names = FALSE)
+}else{
+  path_similarity <- read.csv("datasets/path_similarity.csv")
+}
+path_similarity = path_similarity[-murder_sites,]
+
+node_similarity_norm <- 100-norm_min_max(path_similarity$node_similarity)
+node_similarity_rank <- 100-rank_percentiles(path_similarity$node_similarity)
+edge_similarity_norm <- 100-norm_min_max(path_similarity$edge_similarity)
+edge_similarity_rank <- 100-rank_percentiles(path_similarity$edge_similarity)
+factor_2_raw <- data.frame(
+  node = hideouts,
+  node_similarity_norm,
+  node_similarity_rank,
+  edge_similarity_norm,
+  edge_similarity_rank
+)
+
+factor_2_score <- data.frame(
+  node = factor_2_raw$node,
+  score = rowMeans(factor_2_raw[,2:5])
+  
+)
+```
+
+### Fattore 3: contributo della pattugliabilità
+
+Le regole del gioco "Lettere da Whitechapel" prevedono che nella sua fuga, Jack, debba raggiungere il suo nascondiglio con un percorso il cui ultimo arco è un semplice arco ti tipo 0.
+Questo vuol dire che non è possibile avere un percorso valido che termina con l'utilizzo di un vicolo o di una carrozza.
+Dato che questi movimenti alternativi sono l'unico modo che Jack ha a disposizione per evitare una pattuglia della Polizia che si frappone tra di lui e il nodo che vuole raggiungere, diventa importante capire quanto sia conveniente e strategico per la Polizia avere una delle sue pedine in un dato nodo.
+Per misurare questa quantità è possibile definire una metrica ricorsiva che bilanci l'importanza dei nodi neri e dei nodi bianchi in base all'interazione che hannno con gli altri nodi del proprio tipo o di quello opposto.
+
+In questa analisi viene proposta una metrica che definisce in questo modo l'importanza di un nodo:
+
+\begin{itemize}
+  \item Importanza di un nodo bianco:
+  \begin{itemize}
+    \item Un nodo bianco è importante se è adiacente a nodi bianchi importanti ($\beta=0.9$)
+    \item Un nodo bianco è importante se è pattugliato da nodi neri importanti ($\alpha=0.1$)
+  \end{itemize}
+  \item Importanza di un nodo nero:
+  \begin{itemize}
+    \item Un nodo nero è importante se pattuglia nodi bianchi importanti ($\gamma=0.6$)
+    \item Un nodo nero è importante se è adiacente a nodi nero importanti ($\delta=0.4$)
+  \end{itemize}
+\end{itemize}
+
+Al fine di calcolare l'importanza di un nodo per il Fattore 3 vengono usate due matrici di adiacenza differenti:
+
+\begin{itemize}
+  \item Eliminazione degli archi multipli: $ if\quad A_{ij}>1 \rightarrow A_{ij}=1$
+  \item Matrice di adiacenza con archi multipli
+\end{itemize}
+
+```{r}
+policing_graph = subgraph_from_edges(complete_g, which(E(complete_g)$type == 2), delete.vertices=FALSE)
+adj_bw <- as.matrix(as_adjacency_matrix(policing_graph))[196:429,1:195]
+adj_bw[adj_bw>0]<-1
+adj_wb <- as.matrix(as_adjacency_matrix(policing_graph))[1:195,196:429]
+adj_wb[adj_wb>0]<-1
+adj_bb <- as.matrix(as_adjacency_matrix(g_b))
+adj_bb[adj_bb>0]<-1
+adj_ww <- as.matrix(as_adjacency_matrix(g_w))
+adj_ww[adj_ww>0]<-1
+
+# Number of nodes
+num_black <- 234
+num_white <- 195
+
+# Initialize power vectors
+black_power <- rep(1, num_black)
+white_power <- rep(1, num_white)
+
+# Set stopping criterion
+epsilon <- 1e-6
+max_iter <- 100
+diff <- Inf
+iter <- 0
+alpha <- 0.9
+beta <- 0.1
+gamma <- 0.6
+delta <- 0.4
+```
+
+Definita l'importanza di un nodo nero, viene definita la pattugliabilità di un nodo bianco come la somma dell'importanza dei nodi neri che lo pattugliano.
+La pattugliabilità non viene normalizzato per il numero di nodi neri che pattugliano lo stesso nodo.
+
+```{r}
+while (diff > epsilon && iter < max_iter) {
+  iter <- iter + 1
+  black_power_new <- norm_min_max(gamma*adj_bw%*%white_power + delta*adj_bb%*%black_power)
+  white_power_new <- norm_min_max(alpha*adj_wb%*%black_power + beta*adj_ww%*%white_power)
+  
+  diff <- max(abs(black_power_new - black_power),abs(white_power_new - white_power))
+  # Update power vectors
+  black_power <- black_power_new
+  white_power <- white_power_new
+}
+single_edge = (1-adj_wb%*% black_power/rowSums(adj_wb))*100
+```
+
+```{r}
+adj_bw <- as.matrix(as_adjacency_matrix(policing_graph))[196:429,1:195]
+adj_wb <- as.matrix(as_adjacency_matrix(policing_graph))[1:195,196:429]
+adj_bb <- as.matrix(as_adjacency_matrix(g_b))
+adj_ww <- as.matrix(as_adjacency_matrix(g_w))
+
+# Initialize power vectors
+black_power <- rep(1, num_black)
+white_power <- rep(1, num_white)
+
+# Set stopping criterion
+diff <- Inf
+iter <- 0
+```
+
+```{r}
+while (diff > epsilon && iter < max_iter) {
+  iter <- iter + 1
+  black_power_new <- norm_min_max(gamma*adj_bw%*%white_power + delta*adj_bb%*%black_power)
+  white_power_new <- norm_min_max(alpha*adj_wb%*%black_power + beta*adj_ww%*%white_power)
+  
+  diff <- max(abs(black_power_new - black_power),abs(white_power_new - white_power))
+  # Update power vectors
+  black_power <- black_power_new
+  white_power <- white_power_new
+}
+multi_edge = (1-adj_wb%*% black_power/rowSums(adj_wb))*100
+```
+
+```{r}
+factor_3_raw <- data.frame(
+  node <- nodi_w,
+  norm = (norm_min_max(single_edge)*100+norm_min_max(multi_edge)*100)/2,
+  rank = (rank_percentiles(single_edge)+rank_percentiles(multi_edge))/2
+)
+factor_3_score <- data.frame(
+  node <- nodi_w,
+  score = (factor_3_raw$norm+factor_3_raw$rank)/2
+)
+factor_3_complete = factor_3_score
+factor_3_score <- data.frame(
+  node = hideouts,
+  score = (factor_3_raw[-murder_sites,]$norm+factor_3_raw[-murder_sites,]$rank)/2
+)
+```
+
+### Fattore 4: rischio dei percorsi
+
+Un'ulteriore caratteristica desiderabile per un nascondiglio è quella di avere a disposizione percorsi minimi che percorrono nodi con un punteggio di pattugliabilità basso.
+Questo vuol dire che cercare di seguire Jack richiede alla Polizia di piazzare le proprie pedine i nodi neri meno potenti riducendone l'utilità.
+A tale scopo, per misurare quanto i percorsi minimi verso un nodo siano sicuri o rischiosi, è possibile utilizzare il punteggio di pattugliabilità definito poc'anzi nel Fattore 3.
+E' possibile sommare il punteggio di ogni nodo bianco in ciascuno dei percorsi Possiamo utilizzare il punteggio del Fattore 3 relativo alla pattugliabilità di un nodo
+<!--
+```{r eval=FALSE, include=FALSE}
+if (!exists("path_matrix_data")) {
+  path_matrix_data <- read.csv("datasets/path_matrix.csv", header = FALSE, col.names = c("node",1:195))
+}
+path_matrix_data <- path_matrix_data %>% arrange(node)
+path_matrix <- as.matrix(path_matrix_data)
+```
+
+```{r eval=FALSE, include=FALSE}
+all_paths = bind_rows(n1, n2, n3, n4)
+path_policing_matrix <- path_matrix[,2:196] %*% (100-factor_3_complete$score)
+norm_path_pol_matrix <- path_policing_matrix / all_paths$cost
+norm_path_pol_cost <- rowSums(norm_path_pol_matrix)
+path_policing_frame <- data.frame(
+  to = all_paths$to,
+  cost = all_paths$cost,
+  policing = norm_path_pol_cost
+)
+path_policing_score <- path_policing_frame %>% group_by(to) %>%
+  summarize(
+    length = sum(cost),
+    count = n(),
+    policing_score = sum(policing)/length/count,
+    .groups = "drop"
+  )
+path_policing_score = path_policing_score[-murder_sites,]
+factor_4_score = data.frame(
+  node = hideouts,
+  score = 100-(norm_min_max(path_policing_score$policing_score)+rank_percentiles(path_policing_score$policing_score))/2
+)
+```
+
+### Final score
+
+Dopo aver calcolato il punteggio di ogni fattore per ogni nodo del grafo è possibile sommare i punteggi per avere un quadro globale su quali dei nodi risultino dei canditati più validi come nascondigli.
+
+```{r eval=FALSE, include=FALSE}
+best_hideout = data.frame(
+  node = factor_1_score$node,
+  score = factor_1_score$score + factor_2_score$score + 0.8*factor_3_score$score + 0.8*factor_4_score$score
+)
+
+best_hideout <- best_hideout[order(-best_hideout$score), ]
+best_hideout_top10 <- best_hideout[1:10,]
+```
+
+```{r eval=FALSE, include=FALSE}
+plot1<-ggplot(best_hideout, aes(x = reorder(node, -score), y = score)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Totale punteggio",x = NULL, y = "Punteggio")+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+plot2<-ggplot(best_hideout_top10, aes(x = reorder(node, -score), y = score)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Totale punteggio Top 10",x = NULL, y = "Punteggio")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+grid.arrange(plot1, plot2, ncol = 1)
+```
+-->

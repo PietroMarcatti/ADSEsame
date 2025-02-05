@@ -1,0 +1,114 @@
+library(igraph)        # For network analysis
+library(tidyverse)     # For general data manipulation
+library(ggraph)
+library(tidygraph)
+library(dplyr)
+# Read CSV files
+edges <- read_csv("carriage_edges.csv", col_names = TRUE)
+nodes <- read_csv("nodes.csv", col_names = TRUE)
+# Create a graph
+g <- graph_from_data_frame(d = edges, vertices = nodes, directed = FALSE)
+# Check graph summary
+summary(g)
+
+# Plot the graph
+plot(g)
+# Add labels to edge types
+E(g)$type_label <- factor(E(g)$type, 
+                          levels = c(0, 1, 2, 3), 
+                          labels = c("white-white", "black-black", "black-white", "alleyway"))
+
+
+# Visualization / Plotting -----------------------------------------------------
+
+# Convert igraph object to tidygraph for better compatibility with ggraph
+graph_tidy <- as_tbl_graph(g)
+
+# Extract node numbers without prefixes
+graph_tidy <- graph_tidy %>% 
+  mutate(name = gsub("^W|B", "", name))
+
+# Create the plot
+ggraph(graph_tidy, layout = "fr") +  # 'fr' stands for Fruchterman-Reingold layout
+  geom_edge_link(aes(color = as.factor(type)), width = 1) +  # Customize edge colors
+  geom_node_point(aes(fill = ifelse(name %in% nodes$name[grepl("^W", nodes$name)], 
+                                    "white", "black")),
+                  size = 8, shape = 21, stroke = 1.5) +  # Shape and stroke for circles
+  geom_node_text(aes(label = name, color = ifelse(name %in% nodes$name[grepl("^W", nodes$name)], 
+                                                  "black", "white")),
+                 size = 4, fontface = "bold") +  # Text inside nodes
+  scale_edge_color_manual(values = c("darkgrey", "blue", "green", "red"), 
+                          name = "Edge Type", 
+                          labels = c("White-White", "Black-Black", "Black-White", "Alleyway")) +
+  scale_fill_manual(values = c("white" = "white", "black" = "black")) +  # Node fill
+  scale_color_manual(values = c("black" = "black", "white" = "white")) +  # Node text
+  theme_graph() +  # Clean graph theme
+  theme(legend.position = "bottom")  # Move legend below
+
+# Proximity Metrics ------------------------------------------------------------
+# Filter edges based on type (only white-white edges (type 0) and alleyway edges (type 3))
+edges_filtered <- edges[edges$type %in% c(0, 3, 4),]
+# Create the graph using igraph
+g <- graph_from_data_frame(edges_filtered, directed = FALSE)
+
+# List of murder sites (example, adjust to your dataset)
+murder_sites <- c("W3", "W21", "W27","W65","W84", "W147", "W149", "W158")
+
+# List of candidate hideouts (example, adjust to your dataset)
+hideouts <- setdiff(paste0("W", seq(1, 195)), murder_sites)
+
+# Load the shortest paths data for all 4 nights
+n1_paths <- read.csv("n1.csv")
+n2_paths <- read.csv("n2.csv")
+n3_paths <- read.csv("n3.csv")
+n4_paths <- read.csv("n4.csv")
+
+# Remove the murder sites as they are not valid hideouts
+n1_paths <- n1_paths[!(n1_paths$target %in% murder_sites),]
+n2_paths <- n2_paths[!(n2_paths$target %in% murder_sites),]
+n3_paths <- n3_paths[!(n3_paths$target %in% murder_sites),]
+n4_paths <- n4_paths[!(n4_paths$target %in% murder_sites),]
+
+n1_unique_paths <- n1_paths %>% distinct(start, target, .keep_all = TRUE)
+n2_unique_paths <- n2_paths %>% distinct(start, target, .keep_all = TRUE)
+n3_unique_paths <- n3_paths %>% distinct(start, target, .keep_all = TRUE)
+n4_unique_paths <- n4_paths %>% distinct(start, target, .keep_all = TRUE)
+
+# Compute the average shortest path for each hideout
+n1_average_shortest_paths <- n1_unique_paths %>% group_by(target) %>%
+  summarize(
+    avg_path_length = mean(cost, na.rm = TRUE),
+    num_paths = n()
+  )
+n2_average_shortest_paths <- n2_unique_paths %>% group_by(target) %>%
+  summarize(
+    avg_path_length = mean(cost, na.rm = TRUE),
+    num_paths = n()
+  )
+n3_average_shortest_paths <- n3_unique_paths %>% group_by(target) %>%
+  summarize(
+    avg_path_length = mean(cost, na.rm = TRUE),
+    num_paths = n()
+  )
+n4_average_shortest_paths <- n1_unique_paths %>% group_by(target) %>%
+  summarize(
+    avg_path_length = mean(cost, na.rm = TRUE),
+    num_paths = n()
+  )
+
+average_shortest_paths <- data.frame(
+  target = n1_average_shortest_paths$target,
+  average_n1 = n1_average_shortest_paths$avg_path_length,
+  average_n2 = n2_average_shortest_paths$avg_path_length,
+  average_n3 = n3_average_shortest_paths$avg_path_length,
+  average_n4 = n4_average_shortest_paths$avg_path_length
+)
+average_shortest_paths$total_average <- rowMeans(average_shortest_paths[, c("average_n1", "average_n2", "average_n3", "average_n4")])
+
+# View the results
+print(average_shortest_paths)
+
+
+
+
+

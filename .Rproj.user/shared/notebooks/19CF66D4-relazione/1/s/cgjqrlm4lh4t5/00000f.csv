@@ -1,0 +1,3 @@
+"0","g_w <- subgraph_from_edges(complete_g, which(E(complete_g)$type %in% c(0,3,4)),"
+"0","                           delete.vertices = TRUE)"
+"0","hideouts <- V(g_w)[!V(g_w) %in% murder_sites]"
