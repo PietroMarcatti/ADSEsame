@@ -1,0 +1,4 @@
+"0","if (!file.exists(""datasets/path_similarity.csv"")){"
+"0","  exe_path <- ""./cppScripts/pathSimilarity.exe"""
+"0","  system2(exe_path, wait = TRUE)"
+"0","}  "

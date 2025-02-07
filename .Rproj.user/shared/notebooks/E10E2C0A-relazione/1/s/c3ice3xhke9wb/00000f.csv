@@ -1,0 +1,8 @@
+"0","if (!file.exists(""datasets/n1.csv"")){"
+"0","  exe_path <- ""./cppScripts/pathComputing.exe"""
+"0","  system2(exe_path, wait = TRUE)"
+"0","}"
+"0","n1 <- read.csv(""datasets/n1.csv"")"
+"0","n2 <- read.csv(""datasets/n2.csv"")"
+"0","n3 <- read.csv(""datasets/n3.csv"")"
+"0","n4 <- read.csv(""datasets/n4.csv"")"

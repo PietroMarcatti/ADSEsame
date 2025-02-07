@@ -1,0 +1,6 @@
+"0","nodi_b = V(g)[type == 1]"
+"0","nodi_w = V(g)[type == 0]"
+"0","b_degrees <- degree(g, v = nodi_b)"
+"0","w_degrees <- degree(g, v = nodi_w)"
+"0","b_degree_counts <-table(b_degrees)"
+"0","w_degree_counts <-table(w_degrees)"

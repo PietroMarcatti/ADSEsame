@@ -1,0 +1,4 @@
+"0","murder_sites <- c(3,21,27,65,84,147,149,158)"
+"0","all_paths <- bind_rows(n1, n2, n3, n4)"
+"0","# Creazione del grafo completo"
+"0","complete_g <- graph_from_data_frame(vertices = nodes,d = edges, directed = FALSE)"

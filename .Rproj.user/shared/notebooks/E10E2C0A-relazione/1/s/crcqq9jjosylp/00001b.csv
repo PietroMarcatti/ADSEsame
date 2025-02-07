@@ -1,0 +1,2 @@
+"0","# Creazione del grafo"
+"0","g <- graph_from_data_frame(vertices= nodes, d = base_edges, directed = FALSE)"
